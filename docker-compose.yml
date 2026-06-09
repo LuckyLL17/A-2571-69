@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: cancer-ml-backend:latest
+    container_name: cancer-ml-backend
+    volumes:
+      - ./backend/output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    # 批处理任务，运行完成后退出；若需长期运行可去掉 command 或改为循环
+    command: ["--classifier", "svc", "--n_trials", "20", "--output-dir", "/app/output"]
