@@ -25,6 +25,20 @@ python main.py --classifier svc --n_trials 30 --output-dir output
 python main.py --classifier random_forest --n_trials 20
 ```
 
+### 启动交互式可视化仪表盘
+
+`main.py` 运行结束后会在 `backend/output/` 写入结构化产物（指标、ROC/PR、混淆矩阵、Optuna trials、预测明细、SHAP 数值等）。
+启动 Streamlit 仪表盘后即可在浏览器中交互式查看：
+
+```bash
+cd backend
+streamlit run dashboard.py
+# 默认访问 http://localhost:8501
+```
+
+仪表盘包含 5 个面板：概览（核心指标/最佳超参）、模型评估（混淆矩阵+阈值滑动、ROC、PR）、
+Optuna 调参（收敛曲线、超参与目标值散点）、SHAP 解释（全局重要性、蜂群散点、单样本贡献）、预测明细（筛选/概率分布）。
+
 ### Docker 运行
 
 在项目根目录执行：
