@@ -93,11 +93,15 @@ def explain_model(
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
     if mean_abs_shap.ndim > 1:
         mean_abs_shap = mean_abs_shap.mean(axis=0)
+    # 确保是一维数组
+    mean_abs_shap = np.asarray(mean_abs_shap).ravel()
     order = np.argsort(mean_abs_shap)[::-1]
+    # 确保order是整数类型的一维数组
+    order = np.asarray(order, dtype=int).ravel()
     summary = {
         "feature_names": feature_names,
-        "mean_abs_shap": np.asarray(mean_abs_shap).ravel().tolist(),
-        "importance_order": [feature_names[int(i)] for i in order.ravel()],
+        "mean_abs_shap": mean_abs_shap.tolist(),
+        "importance_order": [feature_names[int(i)] for i in order],
     }
 
     shap.summary_plot(
