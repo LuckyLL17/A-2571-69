@@ -279,21 +279,39 @@ def render_shap(shap_pack: dict | None, feature_names_meta: list[str] | None) ->
     with col2:
         st.markdown("#### SHAP 蜂群散点 (前 N 特征)")
         # 将每个样本×特征的 (shap, feature_value) 展平作图
+        # 注意：px.strip 不支持 color_continuous_scale，因此使用 px.scatter +
+        # 手动 y 抖动来实现“类似蜂群”的展示，并保留连续色阶。
         rows = []
-        for j in top_idx:
+        rng = np.random.default_rng(42)
+        # 维持 top_idx 的顺序作为 y 轴类目顺序（最大重要性在顶部）
+        feature_order = [feature_names[j] for j in top_idx][::-1]
+        for rank, j in enumerate(top_idx):
+            base_y = feature_order.index(feature_names[j])  # y 轴位置
             for i in range(shap_values.shape[0]):
                 rows.append({
                     "feature": feature_names[j],
+                    # 在整数 y 位置上下做小幅抖动，模拟蜂群展开
+                    "y_jitter": base_y + float(rng.uniform(-0.3, 0.3)),
                     "shap_value": float(shap_values[i, j]),
                     "feature_value": float(plot_X[i, j]),
                 })
         df_sw = pd.DataFrame(rows)
-        fig_sw = px.strip(
-            df_sw, x="shap_value", y="feature",
-            color="feature_value", color_continuous_scale="RdBu_r",
-            stripmode="overlay",
+        fig_sw = px.scatter(
+            df_sw,
+            x="shap_value",
+            y="y_jitter",
+            color="feature_value",
+            color_continuous_scale="RdBu_r",
+            hover_data=["feature", "feature_value"],
         )
-        fig_sw.update_traces(jitter=0.4, marker=dict(size=5, opacity=0.7))
+        # 把 y 轴整数刻度替换为对应的特征名
+        fig_sw.update_yaxes(
+            tickmode="array",
+            tickvals=list(range(len(feature_order))),
+            ticktext=feature_order,
+            title="feature",
+        )
+        fig_sw.update_traces(marker=dict(size=5, opacity=0.7))
         fig_sw.update_layout(margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig_sw, use_container_width=True)
 
