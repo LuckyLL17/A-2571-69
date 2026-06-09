@@ -1,6 +1,6 @@
-# 癌症数据集分类预测（管道 + Optuna + SHAP）
+# 癌症数据集分类预测（管道 + Optuna + SHAP + 交互式仪表盘）
 
-基于 Python 的癌症分类项目：使用 sklearn 管道（标准化 + 分类器）、Optuna 调参、SHAP 做特征解释，无前端界面。
+基于 Python 的癌症分类项目：使用 sklearn 管道（标准化 + 分类器）、Optuna 调参、SHAP 做特征解释，并提供基于 Dash 的交互式可视化仪表盘。
 
 ---
 
@@ -24,6 +24,23 @@ python main.py
 python main.py --classifier svc --n_trials 30 --output-dir output
 python main.py --classifier random_forest --n_trials 20
 ```
+
+### 运行交互式仪表盘（推荐）
+
+```bash
+cd backend
+pip install -r requirements.txt
+python dashboard_app.py
+```
+
+然后在浏览器中访问 `http://localhost:8050` 即可打开交互式可视化仪表盘。
+
+仪表盘功能包括：
+- **模型性能**：准确率、精确率、召回率、F1分数仪表盘，混淆矩阵，ROC曲线
+- **特征重要性**：SHAP摘要图（beeswarm）、SHAP条形图
+- **调参过程**：Optuna超参数优化历史可视化
+- **数据探索**：特征分布图、箱线图、平行坐标图
+- **单样本解释**：单样本预测解释瀑布图、概率仪表盘
 
 ### Docker 运行
 
@@ -83,8 +100,9 @@ docker-compose up -d
 │   └── project_design.md     # 系统架构、数据流、模块与接口清单
 └── backend/
     ├── Dockerfile             # 基于 python:3.11-slim 的镜像构建
-    ├── requirements.txt      # 依赖：scikit-learn、optuna、shap、matplotlib 等
+    ├── requirements.txt      # 依赖：scikit-learn、optuna、shap、matplotlib、dash、plotly 等
     ├── main.py               # 入口：加载数据 → Optuna 调参 → 训练 → 评估 → SHAP 解释
+    ├── dashboard_app.py      # 交互式可视化仪表盘入口
     ├── output/                # 运行后生成（metrics.json、SHAP 图、分类报告等）
     └── src/
         ├── __init__.py
@@ -97,9 +115,13 @@ docker-compose up -d
         ├── tuning/            # Optuna 调参
         │   ├── __init__.py
         │   └── optuna_tune.py # 超参搜索与交叉验证
-        └── interpretation/    # SHAP 可解释性
+        ├── interpretation/    # SHAP 可解释性
+        │   ├── __init__.py
+        │   └── shap_explain.py    # TreeExplainer/KernelExplainer、摘要图与条形图
+        └── dashboard/         # 仪表盘模块
             ├── __init__.py
-            └── shap_explain.py    # TreeExplainer/KernelExplainer、摘要图与条形图
+            ├── data_utils.py  # 数据管理与模型集成
+            └── plots.py       # 可视化图表生成
 ```
 
 ## 技术栈
@@ -108,5 +130,8 @@ docker-compose up -d
 - scikit-learn（管道、StandardScaler、SVC/RandomForest）
 - Optuna（超参优化）
 - SHAP（特征可解释性）
+- Dash（交互式Web仪表盘）
+- Plotly（交互式可视化图表）
+- dash-bootstrap-components（Bootstrap样式组件）
 
 数据源为 `sklearn.datasets.load_breast_cancer`（威斯康星乳腺癌二分类，30 维特征）。
