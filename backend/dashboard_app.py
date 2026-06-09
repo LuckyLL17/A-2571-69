@@ -455,8 +455,10 @@ app.layout = html.Div(
     Output("training-status-text", "children"),
     Output("data-loaded", "data"),
     Output("feature-dropdown", "options"),
+    Output("feature-dropdown", "value"),
     Output("sample-slider", "max"),
     Output("sample-slider", "marks"),
+    Output("sample-slider", "value"),
     Input("train-button", "n_clicks"),
     State("classifier-dropdown", "value"),
     State("n-trials-slider", "value"),
@@ -495,23 +497,33 @@ def train_model(n_clicks, classifier, n_trials):
             # 获取特征列表
             feature_names = data_manager.data["feature_names"]
             feature_options = [{"label": name, "value": name} for name in feature_names]
+            default_feature = feature_names[0] if feature_names else ""
             
-            # 获取测试集样本数
-            n_samples = len(data_manager.data["y_test"])
-            max_sample = min(n_samples - 1, 100)  # 限制最多100个样本可选
-            sample_marks = {i: str(i) for i in range(0, max_sample + 1, 10)}
+            # 获取SHAP样本数（用于单样本解释）
+            n_shap_samples = len(data_manager.shap_values)
+            max_sample = n_shap_samples - 1
+            sample_marks = {i: str(i) for i in range(0, max_sample + 1, max(1, max_sample // 10))}
+            default_sample = 0
             
             status_text = f"模型训练完成! 分类器: {classifier}, 试验次数: {n_trials}"
             logger.info(status_text)
             
-            return status_text, True, feature_options, max_sample, sample_marks
+            return status_text, True, feature_options, default_feature, max_sample, sample_marks, default_sample
             
         except Exception as e:
             error_msg = f"训练出错: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return error_msg, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return (
+                error_msg, 
+                dash.no_update, 
+                dash.no_update, 
+                dash.no_update, 
+                dash.no_update, 
+                dash.no_update,
+                dash.no_update,
+            )
     
-    return "", False, [], 0, {}
+    return "", False, [], "", 0, {}, 0
 
 
 @callback(
@@ -528,24 +540,32 @@ def train_model(n_clicks, classifier, n_trials):
 def update_performance_metrics(data_loaded):
     """更新性能指标图表"""
     if not data_loaded:
-        return [go.Figure()] * 6 + [""]
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title="请先训练模型")
+        return [empty_fig] * 6 + [""]
     
-    # 获取指标
-    metrics = data_manager.get_metrics()
-    metric_figures = create_metrics_cards(metrics)
-    
-    # 获取混淆矩阵
-    cm, class_names = data_manager.get_confusion_matrix()
-    cm_fig = create_confusion_matrix(cm, class_names)
-    
-    # 获取ROC曲线
-    roc_data = data_manager.get_roc_data()
-    roc_fig = create_roc_curve(roc_data)
-    
-    # 获取分类报告
-    report = data_manager.get_classification_report()
-    
-    return *metric_figures, cm_fig, roc_fig, report
+    try:
+        # 获取指标
+        metrics = data_manager.get_metrics()
+        metric_figures = create_metrics_cards(metrics)
+        
+        # 获取混淆矩阵
+        cm, class_names = data_manager.get_confusion_matrix()
+        cm_fig = create_confusion_matrix(cm, class_names)
+        
+        # 获取ROC曲线
+        roc_data = data_manager.get_roc_data()
+        roc_fig = create_roc_curve(roc_data)
+        
+        # 获取分类报告
+        report = data_manager.get_classification_report()
+        
+        return *metric_figures, cm_fig, roc_fig, report
+    except Exception as e:
+        logger.error(f"生成性能指标图表失败: {e}")
+        error_fig = go.Figure()
+        error_fig.update_layout(title=f"数据加载失败: {str(e)}")
+        return [error_fig] * 6 + [f"错误: {str(e)}"]
 
 
 @callback(
@@ -558,13 +578,20 @@ def update_performance_metrics(data_loaded):
 def update_shap_plots(data_loaded, top_n):
     """更新SHAP图表"""
     if not data_loaded:
-        return go.Figure(), go.Figure()
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title="请先训练模型")
+        return empty_fig, empty_fig
     
-    shap_df = data_manager.get_shap_dataframe()
-    summary_fig = create_shap_summary_plot(shap_df, top_n=top_n)
-    bar_fig = create_shap_bar_plot(shap_df, top_n=top_n)
-    
-    return summary_fig, bar_fig
+    try:
+        shap_df = data_manager.get_shap_dataframe()
+        summary_fig = create_shap_summary_plot(shap_df, top_n=top_n)
+        bar_fig = create_shap_bar_plot(shap_df, top_n=top_n)
+        return summary_fig, bar_fig
+    except Exception as e:
+        logger.error(f"生成SHAP图表失败: {e}")
+        error_fig = go.Figure()
+        error_fig.update_layout(title=f"数据加载失败: {str(e)}")
+        return error_fig, error_fig
 
 
 @callback(
@@ -576,32 +603,40 @@ def update_shap_plots(data_loaded, top_n):
 def update_optuna_plots(data_loaded):
     """更新Optuna调参图表"""
     if not data_loaded:
-        return go.Figure(), ""
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title="请先训练模型")
+        return empty_fig, ""
     
-    # 获取调参历史
-    history_df = data_manager.get_optuna_history()
-    history_fig = create_optuna_history_plot(history_df)
-    
-    # 显示最佳参数
-    best_params = data_manager.best_params
-    params_list = []
-    for key, value in best_params.items():
-        if isinstance(value, float):
-            display_value = f"{value:.4f}"
-        else:
-            display_value = str(value)
-        params_list.append(
-            dbc.Badge(
-                f"{key}: {display_value}",
-                color="primary",
-                className="me-2 mb-2",
-                style={"fontSize": "14px", "padding": "8px 12px"},
+    try:
+        # 获取调参历史
+        history_df = data_manager.get_optuna_history()
+        history_fig = create_optuna_history_plot(history_df)
+        
+        # 显示最佳参数
+        best_params = data_manager.best_params
+        params_list = []
+        for key, value in best_params.items():
+            if isinstance(value, float):
+                display_value = f"{value:.4f}"
+            else:
+                display_value = str(value)
+            params_list.append(
+                dbc.Badge(
+                    f"{key}: {display_value}",
+                    color="primary",
+                    className="me-2 mb-2",
+                    style={"fontSize": "14px", "padding": "8px 12px"},
+                )
             )
-        )
-    
-    best_params_div = html.Div(params_list)
-    
-    return history_fig, best_params_div
+        
+        best_params_div = html.Div(params_list)
+        
+        return history_fig, best_params_div
+    except Exception as e:
+        logger.error(f"生成Optuna图表失败: {e}")
+        error_fig = go.Figure()
+        error_fig.update_layout(title=f"数据加载失败: {str(e)}")
+        return error_fig, f"错误: {str(e)}"
 
 
 @callback(
@@ -616,26 +651,38 @@ def update_optuna_plots(data_loaded):
 def update_exploration_plots(data_loaded, feature, dataset):
     """更新数据探索图表"""
     if not data_loaded:
-        return go.Figure(), go.Figure(), go.Figure()
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title="请先训练模型")
+        return empty_fig, empty_fig, empty_fig
     
-    df = data_manager.get_feature_dataframe(dataset=dataset)
-    
-    # 分布图和箱线图
-    dist_fig = create_feature_distribution_plot(df, feature)
-    box_fig = create_feature_boxplot(df, feature)
-    
-    # 平行坐标图 - 使用Top 6特征
-    if data_manager.shap_summary is not None:
-        top_features = data_manager.shap_summary["importance_order"][:6]
-    else:
-        top_features = list(df.columns[:6])
-    
-    # 确保不包含target列
-    top_features = [f for f in top_features if f not in ["target", "target_name"]]
-    
-    parallel_fig = create_parallel_coordinates_plot(df, top_features)
-    
-    return dist_fig, box_fig, parallel_fig
+    try:
+        df = data_manager.get_feature_dataframe(dataset=dataset)
+        
+        # 确保feature有效
+        if not feature or feature not in df.columns:
+            feature = df.columns[0] if len(df.columns) > 0 else ""
+        
+        # 分布图和箱线图
+        dist_fig = create_feature_distribution_plot(df, feature)
+        box_fig = create_feature_boxplot(df, feature)
+        
+        # 平行坐标图 - 使用Top 6特征
+        if data_manager.shap_summary is not None:
+            top_features = data_manager.shap_summary["importance_order"][:6]
+        else:
+            top_features = list(df.columns[:6])
+        
+        # 确保不包含target列
+        top_features = [f for f in top_features if f not in ["target", "target_name"]]
+        
+        parallel_fig = create_parallel_coordinates_plot(df, top_features)
+        
+        return dist_fig, box_fig, parallel_fig
+    except Exception as e:
+        logger.error(f"生成数据探索图表失败: {e}")
+        error_fig = go.Figure()
+        error_fig.update_layout(title=f"数据加载失败: {str(e)}")
+        return error_fig, error_fig, error_fig
 
 
 @callback(
@@ -644,19 +691,34 @@ def update_exploration_plots(data_loaded, feature, dataset):
     Input("next-sample", "n_clicks"),
     State("sample-slider", "value"),
     State("sample-slider", "max"),
+    State("data-loaded", "data"),
     prevent_initial_call=True,
 )
-def navigate_samples(prev_clicks, next_clicks, current_value, max_value):
+def navigate_samples(prev_clicks, next_clicks, current_value, max_value, data_loaded):
     """样本导航按钮"""
+    # 数据未加载时不处理
+    if not data_loaded:
+        return dash.no_update
+    
+    # 处理None的情况
+    if prev_clicks is None:
+        prev_clicks = 0
+    if next_clicks is None:
+        next_clicks = 0
+    if current_value is None:
+        current_value = 0
+    if max_value is None or max_value < 0:
+        max_value = 0
+    
     ctx = dash.callback_context
     if not ctx.triggered:
         return current_value
     
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
-    if trigger_id == "prev-sample":
+    if trigger_id == "prev-sample" and prev_clicks > 0:
         return max(0, current_value - 1)
-    elif trigger_id == "next-sample":
+    elif trigger_id == "next-sample" and next_clicks > 0:
         return min(max_value, current_value + 1)
     
     return current_value
@@ -673,9 +735,21 @@ def navigate_samples(prev_clicks, next_clicks, current_value, max_value):
 def update_sample_explanation(data_loaded, sample_idx):
     """更新单样本解释"""
     if not data_loaded:
-        return go.Figure(), go.Figure(), ""
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title="请先训练模型")
+        return empty_fig, empty_fig, ""
     
-    sample_data = data_manager.get_single_sample_prediction(sample_idx)
+    # 确保sample_idx有效
+    if sample_idx is None:
+        sample_idx = 0
+    
+    try:
+        sample_data = data_manager.get_single_sample_prediction(sample_idx)
+    except Exception as e:
+        logger.error(f"获取单样本预测失败: {e}")
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title=f"数据加载失败: {str(e)}")
+        return empty_fig, empty_fig, f"错误: {str(e)}"
     
     # 预测概率仪表盘
     gauge_fig = create_prediction_probability_gauge(sample_data)

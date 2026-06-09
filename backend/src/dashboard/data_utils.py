@@ -48,6 +48,7 @@ class DashboardDataManager:
         self.study = None
         self.shap_values = None
         self.shap_summary = None
+        self.shap_sample_indices = None  # SHAP计算使用的样本索引
 
     def load_data(self) -> Dict[str, Any]:
         """
@@ -244,7 +245,7 @@ class DashboardDataManager:
 
     def compute_shap_values(self, sample_size: int = 100) -> Tuple[np.ndarray, Dict]:
         """
-        计算SHAP值。
+        计算SHAP值，并记录使用的样本索引。
 
         :param sample_size: 抽样样本数
         :return: (SHAP值数组, SHAP摘要字典)
@@ -255,6 +256,15 @@ class DashboardDataManager:
             raise ValueError("模型或数据未初始化")
 
         logger.info(f"计算SHAP值，样本数: {sample_size}")
+        
+        # 记录抽样的样本索引，用于后续单样本解释
+        X_test = self.data["X_test"]
+        if sample_size is not None and len(X_test) > sample_size:
+            rng = np.random.default_rng(42)
+            self.shap_sample_indices = rng.choice(len(X_test), size=sample_size, replace=False)
+        else:
+            self.shap_sample_indices = np.arange(len(X_test))
+        
         self.shap_values, self.shap_summary = explain_model(
             self.model,
             self.data["X_test"],
@@ -276,18 +286,18 @@ class DashboardDataManager:
         if self.shap_values is None or self.shap_summary is None or self.data is None:
             raise ValueError("SHAP值未计算或数据未初始化")
 
-        # 获取测试集的标准化数据
-        X_scaled = self.model[:-1].transform(self.data["X_test"])
+        # 获取测试集的标准化数据（仅使用有SHAP值的样本）
+        X_test = self.data["X_test"][self.shap_sample_indices]
+        X_scaled = self.model[:-1].transform(X_test)
 
-        # 限制样本数量以便可视化
-        n_samples = min(len(self.shap_values), 100)
+        n_samples = len(self.shap_values)
 
         df_shap = pd.DataFrame(
-            self.shap_values[:n_samples],
+            self.shap_values,
             columns=self.data["feature_names"],
         )
         df_values = pd.DataFrame(
-            X_scaled[:n_samples],
+            X_scaled,
             columns=self.data["feature_names"],
         )
 
@@ -312,41 +322,47 @@ class DashboardDataManager:
         """
         获取单样本预测解释数据。
 
-        :param sample_idx: 样本索引
+        :param sample_idx: SHAP样本列表中的索引（不是原始测试集索引）
         :return: 包含样本预测信息的字典
         """
         if self.model is None or self.data is None:
             raise ValueError("模型或数据未初始化")
 
-        if self.shap_values is None:
+        if self.shap_values is None or self.shap_sample_indices is None:
             self.compute_shap_values()
 
-        X_sample = self.data["X_test"][sample_idx:sample_idx + 1]
-        y_true = self.data["y_test"][sample_idx]
-        y_pred = self.predictions[sample_idx]
-        prob = self.probabilities[sample_idx]
+        # 转换为原始测试集索引
+        original_idx = int(self.shap_sample_indices[sample_idx])
+        
+        X_sample = self.data["X_test"][original_idx:original_idx + 1]
+        y_true = self.data["y_test"][original_idx]
+        y_pred = self.predictions[original_idx]
+        prob = self.probabilities[original_idx]
 
         shap_sample = self.shap_values[sample_idx]
         feature_names = self.data["feature_names"]
 
         # 按绝对SHAP值排序
         order = np.argsort(np.abs(shap_sample))[::-1]
-        top_features = [feature_names[i] for i in order[:10]]
-        top_shap = [shap_sample[i] for i in order[:10]]
-        top_values = [X_sample[0][i] for i in order[:10]]
+        # 确保order是整数数组
+        order = np.asarray(order, dtype=int)
+        top_features = [feature_names[int(i)] for i in order[:10]]
+        top_shap = [float(shap_sample[int(i)]) for i in order[:10]]
+        top_values = [float(X_sample[0][int(i)]) for i in order[:10]]
 
         return {
             "sample_idx": sample_idx,
+            "original_idx": original_idx,
             "y_true": y_true,
             "y_true_name": self.data["target_names"][int(y_true)],
             "y_pred": y_pred,
             "y_pred_name": self.data["target_names"][int(y_pred)],
             "probability": prob,
-            "probability_benign": prob[0],
-            "probability_malignant": prob[1],
+            "probability_benign": float(prob[0]),
+            "probability_malignant": float(prob[1]),
             "top_features": top_features,
             "top_shap_values": top_shap,
             "top_feature_values": top_values,
             "all_feature_names": feature_names,
-            "all_feature_values": X_sample[0].tolist(),
+            "all_feature_values": [float(v) for v in X_sample[0].tolist()],
         }
