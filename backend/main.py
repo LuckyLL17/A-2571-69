@@ -1,6 +1,14 @@
 """
 癌症数据集分类预测主入口。
 流程：加载数据 -> 管道化建模(标准化+分类器) -> Optuna 调参 -> 训练最佳模型 -> 评估 -> SHAP 特征解释。
+
+本模块在原有产出基础上，额外保存以下结构化数据，供 Streamlit 交互式仪表盘使用：
+- confusion_matrix.json：测试集混淆矩阵
+- roc_curve.json：ROC 曲线 (fpr, tpr, auc)
+- pr_curve.json：Precision-Recall 曲线 (precision, recall, ap)
+- optuna_trials.csv：Optuna 试验完整记录
+- predictions.csv：测试集真实标签、预测标签与概率
+- shap_values.npz：SHAP 数值与展示样本，便于仪表盘做交互式探索
 """
 import argparse
 import json
@@ -10,6 +18,8 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import numpy as np
+import pandas as pd
 
 # 将 backend 根目录加入 path，便于以 python main.py 或模块方式运行
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,7 +28,16 @@ from src.data.load_data import load_cancer_data
 from src.pipeline.model_pipeline import create_pipeline
 from src.tuning.optuna_tune import run_study
 from src.interpretation.shap_explain import explain_model
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+    auc,
+    precision_recall_curve,
+    average_precision_score,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +89,11 @@ def main():
     pipeline = create_pipeline(classifier=args.classifier, **best_params)
     pipeline.fit(X_train, y_train)
     y_pred = pipeline.predict(X_test)
+    # 概率或 decision_function 输出，用于 ROC/PR 曲线绘制
+    if hasattr(pipeline, "predict_proba"):
+        y_proba = pipeline.predict_proba(X_test)[:, 1]
+    else:
+        y_proba = pipeline.decision_function(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="weighted")
     report = classification_report(y_test, y_pred, target_names=target_names)
@@ -77,17 +101,33 @@ def main():
     logger.info("测试集 Accuracy: %.4f, F1 (weighted): %.4f", accuracy, f1)
     logger.info("分类报告:\n%s", report)
 
+    # ====== 评估曲线与混淆矩阵：保存为 JSON 给前端仪表盘读取 ======
+    cm = confusion_matrix(y_test, y_pred)
+    fpr, tpr, roc_thresholds = roc_curve(y_test, y_proba)
+    roc_auc = float(auc(fpr, tpr))
+    precision, recall, pr_thresholds = precision_recall_curve(y_test, y_proba)
+    avg_precision = float(average_precision_score(y_test, y_proba))
+
     metrics = {
+        "classifier": args.classifier,
         "best_params": best_params,
         "best_cv_value": study.best_value,
         "test_accuracy": accuracy,
         "test_f1_weighted": f1,
+        "roc_auc": roc_auc,
+        "average_precision": avg_precision,
+        "target_names": target_names,
+        "feature_names": feature_names,
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
         "classification_report": report,
     }
     def _json_default(obj):
         import numpy as np
         if isinstance(obj, (np.integer, np.floating)):
             return float(obj) if isinstance(obj, np.floating) else int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
         raise TypeError(type(obj).__name__)
 
     metrics_path = output_dir / "metrics.json"
@@ -97,6 +137,39 @@ def main():
     with open(output_dir / "classification_report.txt", "w", encoding="utf-8") as f:
         f.write(report)
     logger.info("指标已保存: %s", metrics_path)
+
+    # 混淆矩阵
+    with open(output_dir / "confusion_matrix.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {"matrix": cm.tolist(), "labels": list(target_names)},
+            f, indent=2, ensure_ascii=False,
+        )
+    # ROC 曲线
+    with open(output_dir / "roc_curve.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {"fpr": fpr.tolist(), "tpr": tpr.tolist(), "auc": roc_auc},
+            f, indent=2, ensure_ascii=False,
+        )
+    # PR 曲线
+    with open(output_dir / "pr_curve.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "precision": precision.tolist(),
+                "recall": recall.tolist(),
+                "average_precision": avg_precision,
+            },
+            f, indent=2, ensure_ascii=False,
+        )
+    # 测试集预测明细，便于仪表盘逐样本查看
+    pred_df = pd.DataFrame(X_test, columns=feature_names)
+    pred_df.insert(0, "y_true", y_test)
+    pred_df.insert(1, "y_pred", y_pred)
+    pred_df.insert(2, "y_proba", y_proba)
+    pred_df.to_csv(output_dir / "predictions.csv", index=False)
+    # Optuna 试验记录，仪表盘可绘制目标值收敛与超参分布
+    trials_df = study.trials_dataframe(attrs=("number", "value", "params", "state"))
+    trials_df.to_csv(output_dir / "optuna_trials.csv", index=False)
+    logger.info("评估曲线、预测明细与 Optuna 试验记录已保存")
 
     logger.info("4. SHAP 特征解释")
     shap_values, summary = explain_model(

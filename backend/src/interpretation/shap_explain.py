@@ -98,7 +98,21 @@ def explain_model(
         "feature_names": feature_names,
         "mean_abs_shap": np.asarray(mean_abs_shap).ravel().tolist(),
         "importance_order": [feature_names[int(i)] for i in order.ravel()],
+        # 同步导出展示样本与原始 SHAP 数组，供仪表盘做交互式可视化
+        "plot_X": np.asarray(plot_X),
+        "shap_values": np.asarray(shap_values),
+        "X_explain": np.asarray(X_explain),
     }
+
+    # 持久化 SHAP 数值与展示样本，便于无须重算即可在仪表盘渲染
+    np.savez(
+        output_dir / "shap_values.npz",
+        shap_values=np.asarray(shap_values),
+        plot_X=np.asarray(plot_X),
+        X_explain=np.asarray(X_explain),
+        feature_names=np.array(feature_names, dtype=object),
+        mean_abs_shap=np.asarray(mean_abs_shap).ravel(),
+    )
 
     shap.summary_plot(
         shap_values,
