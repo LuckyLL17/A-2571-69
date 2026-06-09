@@ -190,7 +190,7 @@ def main():
     logger.info("模型已保存")
 
     logger.info("4. SHAP 特征解释")
-    shap_values, summary = explain_model(
+    shap_values, summary, shap_sample_idx = explain_model(
         pipeline,
         X_test,
         feature_names,
@@ -207,6 +207,7 @@ def main():
         output_dir / "shap_values.npz",
         shap_values=shap_values,
         mean_abs_shap=np.array(summary["mean_abs_shap"]),
+        sample_idx=shap_sample_idx,
     )
     logger.info("SHAP值已保存，特征重要性顺序已保存: %s", importance_path)
 

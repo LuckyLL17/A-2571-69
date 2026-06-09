@@ -21,7 +21,7 @@ def explain_model(
     output_dir: str | Path = "output",
     max_display: int = 15,
     sample_size: int | None = 100,
-) -> tuple[np.ndarray, dict]:
+) -> tuple[np.ndarray, dict, np.ndarray]:
     """
     对管道模型做 SHAP 解释，并保存图表与汇总统计。
 
@@ -31,7 +31,7 @@ def explain_model(
     :param output_dir: 图表与结果输出目录
     :param max_display: 摘要图/条形图展示的最大特征数
     :param sample_size: 若提供，则对 X 抽样以加速 KernelExplainer；None 表示不抽样
-    :return: (shap_values 数组, 汇总统计 dict)
+    :return: (shap_values 数组, 汇总统计 dict, 抽样索引数组)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +47,7 @@ def explain_model(
         idx = rng.choice(len(X), size=sample_size, replace=False)
         X_explain = X[idx]
     else:
+        idx = np.arange(len(X))
         X_explain = X
 
     X_scaled = pipeline[:-1].transform(X_explain)
@@ -90,14 +91,31 @@ def explain_model(
             shap_values = shap_values[1]
         plot_X = X_scaled
 
+    # 确保shap_values形状正确：处理不同分类器返回的不同形状
+    n_samples, n_features = X_explain.shape
+    
+    # 处理多输出情况，确保shap_values形状为(n_samples, n_features)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+    if shap_values.ndim == 3:
+        # 形状为(n_samples, n_features, n_classes)，取正类
+        shap_values = shap_values[:, :, 1]
+    if shap_values.ndim == 1:
+        shap_values = shap_values.reshape(1, -1)
+    
+    # 确保形状匹配
+    if shap_values.shape[1] != n_features:
+        shap_values = shap_values[:, :n_features]
+    
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
-    if mean_abs_shap.ndim > 1:
-        mean_abs_shap = mean_abs_shap.mean(axis=0)
-    order = np.argsort(mean_abs_shap)[::-1]
+    # 确保mean_abs_shap长度与特征数一致
+    mean_abs_shap = np.asarray(mean_abs_shap).ravel()[:n_features]
+    
+    order = np.argsort(mean_abs_shap)[::-1].astype(int)
     summary = {
         "feature_names": feature_names,
-        "mean_abs_shap": np.asarray(mean_abs_shap).ravel().tolist(),
-        "importance_order": [feature_names[int(i)] for i in order.ravel()],
+        "mean_abs_shap": mean_abs_shap.tolist(),
+        "importance_order": [feature_names[int(i)] for i in order],
     }
 
     shap.summary_plot(
@@ -126,4 +144,4 @@ def explain_model(
     plt.close()
     logger.info("SHAP 条形图已保存: %s", bar_path)
 
-    return shap_values, summary
+    return shap_values, summary, idx

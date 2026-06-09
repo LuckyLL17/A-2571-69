@@ -59,6 +59,38 @@ def load_results(output_dir: str = "output"):
     shap_data = np.load(output_path / "shap_values.npz")
     shap_values = shap_data["shap_values"]
     mean_abs_shap = shap_data["mean_abs_shap"]
+    shap_sample_idx = shap_data["sample_idx"] if "sample_idx" in shap_data else np.arange(len(shap_values))
+    
+    # 确保SHAP值维度正确，长度与特征数一致
+    n_features = len(metrics["feature_names"])
+    
+    # 处理shap_values形状
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+    if shap_values.ndim == 3:
+        shap_values = shap_values[:, :, 1]
+    if shap_values.ndim == 1:
+        shap_values = shap_values.reshape(1, -1)
+    if shap_values.shape[1] > n_features:
+        shap_values = shap_values[:, :n_features]
+    
+    # 处理mean_abs_shap长度
+    mean_abs_shap = np.asarray(mean_abs_shap).ravel()[:n_features]
+    
+    # 确保样本索引长度匹配
+    shap_sample_idx = np.asarray(shap_sample_idx).astype(int)
+    if len(shap_sample_idx) > len(shap_values):
+        shap_sample_idx = shap_sample_idx[:len(shap_values)]
+    elif len(shap_sample_idx) < len(shap_values):
+        shap_sample_idx = np.arange(len(shap_values))
+    
+    # 读取分类报告文本文件
+    classification_report_path = output_path / "classification_report.txt"
+    if classification_report_path.exists():
+        with open(classification_report_path, "r", encoding="utf-8") as f:
+            metrics["classification_report"] = f.read()
+    else:
+        metrics["classification_report"] = "分类报告文件不存在"
     
     # 加载模型
     model = joblib.load(output_path / "model.pkl")
@@ -73,6 +105,7 @@ def load_results(output_dir: str = "output"):
         "feature_importance": feature_importance,
         "shap_values": shap_values,
         "mean_abs_shap": mean_abs_shap,
+        "shap_sample_idx": shap_sample_idx,
         "model": model,
         "feature_names": metrics["feature_names"],
         "target_names": metrics["target_names"],
@@ -437,16 +470,24 @@ elif page == "✨ SHAP解释":
     
     with col2:
         st.subheader("🎯 SHAP蜂群图 (Summary Plot)")
-        X_test_scaled = data["model"][:-1].transform(test_df[feature_names].values)
         
+        # 使用SHAP解释时实际抽样的样本索引，确保数据长度一致
+        shap_sample_idx = data["shap_sample_idx"]
+        X_test_subset = test_df.iloc[shap_sample_idx]
+        pred_subset = predictions_df.iloc[shap_sample_idx]
+        X_test_scaled = data["model"][:-1].transform(X_test_subset[feature_names].values)
+        
+        # 确保显示的特征数不超过实际特征数
+        top_n = min(top_n, len(feature_names))
         top_features = data["feature_importance"][:top_n]
-        top_indices = [feature_names.index(f) for f in top_features]
+        top_indices = [int(feature_names.index(f)) for f in top_features if f in feature_names]
         
         fig_dot = go.Figure()
         
         for i, feat_idx in enumerate(reversed(top_indices)):
+            feat_idx = int(feat_idx)
             feat_name = feature_names[feat_idx]
-            shap_vals = shap_values[:, feat_idx]
+            shap_vals = shap_values[:, feat_idx] if feat_idx < shap_values.shape[1] else np.zeros(len(shap_values))
             feat_vals = X_test_scaled[:, feat_idx]
             
             fig_dot.add_trace(go.Scatter(
@@ -485,14 +526,14 @@ elif page == "✨ SHAP解释":
         index=0
     )
     
-    feat_idx = feature_names.index(selected_feature)
-    feat_shap = shap_values[:, feat_idx]
+    feat_idx = int(feature_names.index(selected_feature))
+    feat_shap = shap_values[:, feat_idx] if feat_idx < shap_values.shape[1] else np.zeros(len(shap_values))
     feat_vals = X_test_scaled[:, feat_idx]
     
     fig_dep = px.scatter(
         x=feat_vals,
         y=feat_shap,
-        color=predictions_df["prob_malignant"],
+        color=pred_subset["prob_malignant"],
         color_continuous_scale="RdBu_r",
         labels={
             "x": f"{selected_feature} (标准化后)",
@@ -501,8 +542,8 @@ elif page == "✨ SHAP解释":
         },
         title=f"特征 '{selected_feature}' 的SHAP依赖图",
         hover_data={
-            "真实标签": predictions_df["target_name"],
-            "预测标签": predictions_df["predicted_name"]
+            "真实标签": pred_subset["target_name"].values,
+            "预测标签": pred_subset["predicted_name"].values
         }
     )
     fig_dep.add_hline(y=0, line_dash="dash", line_color="gray")
@@ -680,40 +721,47 @@ elif page == "🔮 单样本预测":
     if select_method == "从测试集选择":
         st.subheader("🎯 该样本的SHAP特征贡献瀑布图")
         
+        # 确保sample_shap是一维数组且长度正确
+        sample_shap = np.asarray(sample_shap).ravel()
+        n_feat = len(feature_names)
+        if len(sample_shap) > n_feat:
+            sample_shap = sample_shap[:n_feat]
+        
         # 计算基值和SHAP贡献
         X_scaled = model[:-1].transform(X_sample)
         clf = model.named_steps["classifier"]
+        base_value = 0.5
         
         if hasattr(clf, "predict_proba"):
             try:
                 import shap as shap_lib
-                explainer = shap_lib.TreeExplainer(clf) if "Forest" in type(clf).__name__ or "Tree" in type(clf).__name__ else None
-                if explainer is not None:
+                if "Forest" in type(clf).__name__ or "Tree" in type(clf).__name__:
+                    explainer = shap_lib.TreeExplainer(clf)
                     base_value = float(explainer.expected_value)
-                    if isinstance(base_value, list):
-                        base_value = base_value[1]
-                else:
-                    base_value = 0.5
-            except:
-                base_value = 0.5
-        else:
-            base_value = 0.5
+                    if isinstance(base_value, (list, np.ndarray)):
+                        base_value = float(base_value[1]) if len(base_value) > 1 else float(base_value[0])
+            except Exception as e:
+                pass
         
         # 创建SHAP瀑布图
-        sorted_idx = np.argsort(np.abs(sample_shap))[::-1]
-        top_n_waterfall = 15
-        top_sorted_idx = sorted_idx[:top_n_waterfall]
+        # 确保sorted_idx是int类型数组
+        sorted_idx = np.argsort(np.abs(sample_shap))[::-1].astype(int)
+        top_n_waterfall = min(15, len(sample_shap))
+        top_sorted_idx = sorted_idx[:top_n_waterfall].astype(int)
         
-        waterfall_features = [feature_names[i] for i in top_sorted_idx]
-        waterfall_shap = [sample_shap[i] for i in top_sorted_idx]
+        waterfall_features = [feature_names[int(i)] for i in top_sorted_idx]
+        waterfall_shap = [float(sample_shap[int(i)]) for i in top_sorted_idx]
+        
+        final_prob = float(sample["prob_malignant"])
+        total_contrib = final_prob - base_value
         
         fig_waterfall = go.Figure(go.Waterfall(
             name="SHAP贡献",
             orientation="h",
             measure=["relative"] * len(waterfall_features) + ["total"],
             y=waterfall_features[::-1] + ["最终预测"],
-            x=[float(s) for s in waterfall_shap[::-1]] + [float(sample["prob_malignant"] if select_method == "从测试集选择" else pred_proba[1]) - base_value],
-            base=base_value,
+            x=[float(s) for s in waterfall_shap[::-1]] + [total_contrib],
+            base=float(base_value),
             hovertemplate="特征: %{y}<br>SHAP贡献: %{x:.4f}<extra></extra>"
         ))
         fig_waterfall.update_layout(
