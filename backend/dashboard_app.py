@@ -48,6 +48,19 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 
+# Dash版本兼容性处理：新版使用app.run，旧版使用app.run_server
+def run_dash_app(**kwargs):
+    """
+    兼容不同版本Dash的启动函数。
+    新版本Dash推荐使用app.run()，旧版本使用app.run_server()。
+    """
+    try:
+        # 尝试使用新版API
+        app.run(**kwargs)
+    except AttributeError:
+        # 回退到旧版API
+        app.run_server(**kwargs)
+
 # ==================== 页面布局组件 ====================
 
 def create_header():
@@ -708,8 +721,8 @@ def main():
     logger.info("启动服务器: http://localhost:8050")
     logger.info("=" * 60)
     
-    # 启动服务器
-    app.run_server(
+    # 启动服务器（使用兼容函数，支持新旧版本Dash）
+    run_dash_app(
         host="0.0.0.0",
         port=8050,
         debug=False,
