@@ -3,6 +3,7 @@
 根据管道内最终估计器类型选择 TreeExplainer 或 KernelExplainer，
 输出摘要图、条形图、瀑布图、依赖图与特征重要性。
 优化点：增加瀑布图和依赖图，返回更丰富的解释数据供仪表盘使用。
+兼容 SHAP >=0.43（旧版返回 list）和 >=0.52（新版返回 3D ndarray）。
 """
 import logging
 from pathlib import Path
@@ -14,6 +15,41 @@ import shap
 from sklearn.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_positive_class_shap(shap_values):
+    """
+    从 SHAP 返回值中提取正类（malignant）的 SHAP 值。
+    兼容多种返回格式：
+      - 旧版 list: [class0_array, class1_array] → 取 [1]
+      - 新版 3D ndarray: (n_samples, n_features, n_classes) → 取 [:, :, 1]
+      - 2D ndarray: (n_samples, n_features) → 直接返回（单分类或已提取）
+    """
+    if isinstance(shap_values, list):
+        # 旧版 SHAP：返回每个类别的 2D 数组列表
+        return shap_values[-1] if len(shap_values) > 1 else shap_values[0]
+    arr = np.asarray(shap_values)
+    if arr.ndim == 3:
+        # 新版 SHAP：返回 (n_samples, n_features, n_classes)
+        return arr[:, :, -1]
+    # 2D 数组，直接返回
+    return arr
+
+
+def _get_base_value(explainer):
+    """
+    从 explainer 中获取正类的基准值（base value）。
+    兼容 list / ndarray / 标量 等多种格式。
+    """
+    ev = explainer.expected_value
+    if isinstance(ev, (list, np.ndarray)):
+        ev_arr = np.asarray(ev)
+        # 如果是一维数组（每个类一个基准值），取正类
+        if ev_arr.ndim == 1 and len(ev_arr) > 1:
+            return float(ev_arr[-1])
+        # 如果是标量数组
+        return float(ev_arr.ravel()[-1])
+    return float(ev)
 
 
 def explain_model(
@@ -62,23 +98,19 @@ def explain_model(
         selected_mask = selector.get_support()
         feature_names = [feature_names[i] for i, selected in enumerate(selected_mask) if selected]
 
+    explainer = None
+    shap_values_raw = None
+
     try:
         if "Tree" in clf_name or "Forest" in clf_name or "GradientBoosting" in clf_name:
             # 树模型使用 TreeExplainer，速度更快
             explainer = shap.TreeExplainer(clf, X_scaled)
-            shap_values = explainer.shap_values(X_scaled)
-            # 二分类时 shap_values 返回列表，取正类（malignant）的 SHAP 值
-            if isinstance(shap_values, list):
-                shap_values = shap_values[1]
-            plot_X = X_scaled
+            shap_values_raw = explainer.shap_values(X_scaled)
         else:
             # SVC / LogisticRegression / KNN 等非树模型：使用 KernelExplainer
             background_scaled = shap.sample(X_scaled, min(50, len(X_scaled)))
             explainer = shap.KernelExplainer(clf.predict_proba, background_scaled)
-            shap_values = explainer.shap_values(X_scaled, nsamples=min(100, len(X_scaled) * 2))
-            if isinstance(shap_values, list):
-                shap_values = shap_values[1]
-            plot_X = X_scaled
+            shap_values_raw = explainer.shap_values(X_scaled, nsamples=min(100, len(X_scaled) * 2))
     except Exception as e:
         logger.warning(
             "SHAP 首选解释器不可用，回退到 KernelExplainer。异常类型: %s，信息: %s",
@@ -86,73 +118,83 @@ def explain_model(
             str(e),
             exc_info=True,
         )
-        try:
-            background_scaled = shap.sample(X_scaled, min(50, len(X_scaled)))
-            explainer = shap.KernelExplainer(clf.predict_proba, background_scaled)
-            shap_values = explainer.shap_values(X_scaled, nsamples=min(80, len(X_scaled) * 2))
-        except Exception as fallback_e:
-            logger.exception(
-                "KernelExplainer 回退失败。异常类型: %s，信息: %s",
-                type(fallback_e).__name__,
-                str(fallback_e),
-            )
-            raise RuntimeError(
-                f"SHAP 解释失败: 首选 {type(e).__name__}({e}); 回退 {type(fallback_e).__name__}({fallback_e})"
-            ) from fallback_e
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
-        plot_X = X_scaled
+        background_scaled = shap.sample(X_scaled, min(50, len(X_scaled)))
+        explainer = shap.KernelExplainer(clf.predict_proba, background_scaled)
+        shap_values_raw = explainer.shap_values(X_scaled, nsamples=min(80, len(X_scaled) * 2))
+
+    # 统一提取正类的 SHAP 值，兼容旧版 list 和新版 3D ndarray
+    shap_values = _extract_positive_class_shap(shap_values_raw)
+    plot_X = X_scaled
+
+    # 确保提取后是 2D (n_samples, n_features)
+    shap_values = np.asarray(shap_values)
+    if shap_values.ndim != 2:
+        logger.warning(
+            "SHAP 值维度异常: shape=%s，尝试强制 reshape",
+            shap_values.shape,
+        )
+        # 尝试取第一个"页面"作为 fallback
+        if shap_values.ndim == 3:
+            shap_values = shap_values[:, :, 0]
 
     # 计算每个特征的平均绝对 SHAP 值（全局特征重要性）
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
-    if mean_abs_shap.ndim > 1:
-        mean_abs_shap = mean_abs_shap.mean(axis=0)
+    # 确保是一维数组，长度等于特征数
+    mean_abs_shap = np.asarray(mean_abs_shap).ravel()
     order = np.argsort(mean_abs_shap)[::-1]
 
     summary = {
         "feature_names": feature_names,
-        "mean_abs_shap": np.asarray(mean_abs_shap).ravel().tolist(),
+        "mean_abs_shap": mean_abs_shap.tolist(),
         "importance_order": [feature_names[int(i)] for i in order.ravel()],
-        "shap_values_sample": np.asarray(shap_values[:20]).tolist(),  # 保存前 20 个样本的 SHAP 值供仪表盘使用
-        "X_scaled_sample": np.asarray(plot_X[:20]).tolist(),  # 保存对应的标准化特征值
+        "shap_values_sample": np.asarray(shap_values[:20]).tolist(),
+        "X_scaled_sample": np.asarray(plot_X[:20]).tolist(),
     }
 
     import matplotlib.pyplot as plt
 
     # 1. SHAP 摘要图（蜂群图）
-    shap.summary_plot(
-        shap_values,
-        plot_X,
-        feature_names=feature_names,
-        max_display=max_display,
-        show=False,
-    )
-    summary_path = output_dir / "shap_summary.png"
-    plt.savefig(summary_path, bbox_inches="tight", dpi=120)
-    plt.close()
-    logger.info("SHAP 摘要图已保存: %s", summary_path)
+    try:
+        shap.summary_plot(
+            shap_values,
+            plot_X,
+            feature_names=feature_names,
+            max_display=max_display,
+            show=False,
+        )
+        summary_path = output_dir / "shap_summary.png"
+        plt.savefig(summary_path, bbox_inches="tight", dpi=120)
+        plt.close()
+        logger.info("SHAP 摘要图已保存: %s", summary_path)
+    except Exception as e:
+        logger.warning("SHAP 摘要图生成失败: %s", str(e))
+        plt.close()
 
     # 2. SHAP 条形图（全局特征重要性）
-    shap.summary_plot(
-        shap_values,
-        plot_X,
-        feature_names=feature_names,
-        plot_type="bar",
-        max_display=max_display,
-        show=False,
-    )
-    bar_path = output_dir / "shap_bar.png"
-    plt.savefig(bar_path, bbox_inches="tight", dpi=120)
-    plt.close()
-    logger.info("SHAP 条形图已保存: %s", bar_path)
+    try:
+        shap.summary_plot(
+            shap_values,
+            plot_X,
+            feature_names=feature_names,
+            plot_type="bar",
+            max_display=max_display,
+            show=False,
+        )
+        bar_path = output_dir / "shap_bar.png"
+        plt.savefig(bar_path, bbox_inches="tight", dpi=120)
+        plt.close()
+        logger.info("SHAP 条形图已保存: %s", bar_path)
+    except Exception as e:
+        logger.warning("SHAP 条形图生成失败: %s", str(e))
+        plt.close()
 
     # 3. SHAP 瀑布图（展示单个样本的特征贡献）
     try:
         plt.figure()
-        # 使用 shap.Explanation 对象绘制瀑布图
+        base_val = _get_base_value(explainer)
         explanation = shap.Explanation(
             values=shap_values[0],
-            base_values=explainer.expected_value[1] if isinstance(explainer.expected_value, (list, np.ndarray)) else explainer.expected_value,
+            base_values=base_val,
             data=plot_X[0],
             feature_names=feature_names,
         )
