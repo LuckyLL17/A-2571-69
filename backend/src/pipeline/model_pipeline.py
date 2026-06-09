@@ -47,13 +47,17 @@ def create_pipeline(
         )
 
     # 根据分类器名称实例化对应的模型
+    # 注意：使用 setdefault 设置默认值，避免与 kwargs 中的同名参数冲突
     if classifier == "svc":
-        clf = SVC(probability=True, **kwargs)
+        kwargs.setdefault("probability", True)
+        clf = SVC(**kwargs)
     elif classifier == "random_forest":
         clf = RandomForestClassifier(**kwargs)
     elif classifier == "logistic_regression":
-        # solver 默认 lbfgs，支持 L2 正则；max_iter 增大保证收敛
-        clf = LogisticRegression(solver="lbfgs", max_iter=5000, **kwargs)
+        # solver 和 max_iter 使用 setdefault，允许 Optuna 通过 kwargs 覆盖
+        kwargs.setdefault("solver", "lbfgs")
+        kwargs.setdefault("max_iter", 5000)
+        clf = LogisticRegression(**kwargs)
     elif classifier == "knn":
         clf = KNeighborsClassifier(**kwargs)
     elif classifier == "gradient_boosting":

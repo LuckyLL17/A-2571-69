@@ -54,13 +54,17 @@ def _suggest_params(
             "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2"]),
         })
     elif classifier == "logistic_regression":
+        penalty = trial.suggest_categorical("penalty", ["l1", "l2"])
+        # l1 正则仅支持 saga solver；l2 正则支持 lbfgs 和 saga
+        if penalty == "l1":
+            solver = "saga"
+        else:
+            solver = trial.suggest_categorical("solver", ["lbfgs", "saga"])
         params.update({
             "C": trial.suggest_float("C", 1e-3, 1e3, log=True),
-            "penalty": trial.suggest_categorical("penalty", ["l1", "l2"]),
+            "penalty": penalty,
+            "solver": solver,
         })
-        # l1 正则需要 saga solver
-        if params["penalty"] == "l1":
-            params["solver"] = "saga"
     elif classifier == "knn":
         params.update({
             "n_neighbors": trial.suggest_int("n_neighbors", 3, 30),

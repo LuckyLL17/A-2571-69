@@ -154,6 +154,7 @@ def train_and_evaluate(classifier, n_trials, test_size):
     )
 
     return {
+        "classifier_name": classifier,
         "pipeline": pipeline,
         "study": study,
         "best_params": best_params,
@@ -390,6 +391,8 @@ if run_button or "results" in st.session_state:
         shap_summary = results["shap_summary"]
         feature_names = shap_summary["feature_names"]
         mean_abs_shap = shap_summary["mean_abs_shap"]
+        # 从 results 中获取实际训练的分类器名称，用于定位 SHAP 图片输出目录
+        trained_classifier = results.get("classifier_name", selected_classifier)
 
         # 特征重要性条形图（交互式）
         st.subheader("全局特征重要性 (平均 |SHAP|)")
@@ -412,7 +415,7 @@ if run_button or "results" in st.session_state:
 
         # SHAP 摘要图（蜂群图）- 使用保存的图片
         st.subheader("SHAP 摘要图（蜂群图）")
-        shap_summary_path = Path("output") / selected_classifier / "shap_summary.png"
+        shap_summary_path = Path("output") / trained_classifier / "shap_summary.png"
         if shap_summary_path.exists():
             st.image(str(shap_summary_path), use_column_width=True)
         else:
@@ -420,13 +423,13 @@ if run_button or "results" in st.session_state:
 
         # SHAP 条形图
         st.subheader("SHAP 条形图")
-        shap_bar_path = Path("output") / selected_classifier / "shap_bar.png"
+        shap_bar_path = Path("output") / trained_classifier / "shap_bar.png"
         if shap_bar_path.exists():
             st.image(str(shap_bar_path), use_column_width=True)
 
         # SHAP 瀑布图
         st.subheader("SHAP 瀑布图（单样本解释）")
-        shap_waterfall_path = Path("output") / selected_classifier / "shap_waterfall.png"
+        shap_waterfall_path = Path("output") / trained_classifier / "shap_waterfall.png"
         if shap_waterfall_path.exists():
             st.image(str(shap_waterfall_path), use_column_width=True)
 
@@ -434,7 +437,7 @@ if run_button or "results" in st.session_state:
         st.subheader("SHAP 依赖图")
         importance_order = shap_summary.get("importance_order", [])
         for feat_name in importance_order[:3]:
-            dep_path = Path("output") / selected_classifier / f"shap_dependence_{feat_name.replace(' ', '_')}.png"
+            dep_path = Path("output") / trained_classifier / f"shap_dependence_{feat_name.replace(' ', '_')}.png"
             if dep_path.exists():
                 st.image(str(dep_path), caption=f"依赖图: {feat_name}", use_column_width=True)
 
